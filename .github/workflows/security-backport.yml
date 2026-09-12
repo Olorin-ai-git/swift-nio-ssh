@@ -12,4 +12,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run parser and interoperability tests
-        run: swift test --jobs 4
+        run: swift test --enable-test-discovery --jobs 4

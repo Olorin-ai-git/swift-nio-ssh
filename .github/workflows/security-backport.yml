@@ -1,0 +1,15 @@
+name: SSH security backport
+
+on:
+  pull_request:
+  push:
+    branches: [claudette-0.3]
+
+jobs:
+  linux-tests:
+    runs-on: ubuntu-24.04
+    container: swift:6.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run parser and interoperability tests
+        run: swift test --enable-test-discovery --jobs 4

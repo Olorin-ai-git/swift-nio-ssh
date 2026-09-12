@@ -133,6 +133,72 @@ final class SSHEncryptedTrafficTests: XCTestCase {
         XCTAssertThrowsError(try self.parser.nextPacket())
     }
 
+    func testEncryptedPacketLengthBoundsRejectInvalidLengths() throws {
+        let maximumSize = SSHPacketParser.defaultMaximumPacketSize
+        for cipher in [Protection.aes128, .aes256] {
+            let (_, protection) = cipher.protections()
+            let maximumLength = UInt32(maximumSize - protection.macBytes)
+            for length in [maximumLength, maximumLength + 1, UInt32.max - UInt32(protection.macBytes), UInt32.max] {
+                var parser = SSHPacketParser(allocator: ByteBufferAllocator())
+                var version = ByteBuffer.of(string: "SSH-2.0-length-regression\r\n")
+                parser.append(bytes: &version)
+                XCTAssertNotNil(try parser.nextPacket())
+                parser.addEncryption(protection)
+
+                var header = ByteBufferAllocator().buffer(capacity: protection.cipherBlockSize)
+                header.writeInteger(length)
+                header.writeRepeatingByte(0, count: protection.cipherBlockSize - MemoryLayout<UInt32>.size)
+                parser.append(bytes: &header)
+                XCTAssertThrowsError(try parser.nextPacket()) { error in
+                    XCTAssertEqual((error as? NIOSSHError)?.type, .invalidEncryptedPacketLength)
+                }
+            }
+        }
+    }
+
+    func testEncryptedPacketLengthBelowLimitWaitsForRemainingBytes() throws {
+        for cipher in [Protection.aes128, .aes256] {
+            let (_, protection) = cipher.protections()
+            var parser = SSHPacketParser(allocator: ByteBufferAllocator())
+            var version = ByteBuffer.of(string: "SSH-2.0-length-regression\r\n")
+            parser.append(bytes: &version)
+            XCTAssertNotNil(try parser.nextPacket())
+            parser.addEncryption(protection)
+
+            var header = ByteBufferAllocator().buffer(capacity: protection.cipherBlockSize)
+            header.writeInteger(UInt32(SSHPacketParser.defaultMaximumPacketSize - protection.macBytes - 1))
+            header.writeRepeatingByte(0, count: protection.cipherBlockSize - MemoryLayout<UInt32>.size)
+            parser.append(bytes: &header)
+            XCTAssertNil(try parser.nextPacket())
+            XCTAssertNil(try parser.nextPacket())
+        }
+    }
+
+    func testInvalidMACLengthsThrowParserError() throws {
+        let keys = NIOSSHSessionKeys(
+            initialInboundIV: Array(repeating: 0, count: 12),
+            initialOutboundIV: Array(repeating: 0, count: 12),
+            inboundEncryptionKey: .init(size: .bits128),
+            outboundEncryptionKey: .init(size: .bits128),
+            inboundMACKey: .init(size: .bits128),
+            outboundMACKey: .init(size: .bits128)
+        )
+        for macLength in [-1, Int.max] {
+            let protection = try InvalidMACLengthProtection(initialKeys: keys, mac: nil)
+            protection.configuredMACLength = macLength
+            var parser = SSHPacketParser(allocator: ByteBufferAllocator())
+            var version = ByteBuffer.of(string: "SSH-2.0-length-regression\r\n")
+            parser.append(bytes: &version)
+            XCTAssertNotNil(try parser.nextPacket())
+            parser.addEncryption(protection)
+            var header = ByteBuffer.of(bytes: Array(repeating: 0, count: protection.cipherBlockSize))
+            parser.append(bytes: &header)
+            XCTAssertThrowsError(try parser.nextPacket()) { error in
+                XCTAssertEqual((error as? NIOSSHError)?.type, .invalidEncryptedPacketLength)
+            }
+        }
+    }
+
     func testSamplePacketFromTesting() throws {
         // This is a regression test from an early example that caused us some wrinkles.
         let keys = NIOSSHSessionKeys(initialInboundIV: [178, 178, 37, 48, 59, 189, 228, 147, 215, 24, 162, 20],
@@ -194,4 +260,10 @@ private extension SSHEncryptedTrafficTests {
                               outboundMACKey: SymmetricKey(size: macSize))
         }
     }
+}
+
+private final class InvalidMACLengthProtection: TestTransportProtection {
+    var configuredMACLength = 0
+    override var macBytes: Int { self.configuredMACLength }
+    override func decryptFirstBlock(_ source: inout ByteBuffer) throws {}
 }

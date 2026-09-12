@@ -335,11 +335,17 @@ private struct ECDSASignatureHelper {
         UInt64
     ) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
-    private init(r: ByteBuffer, s: ByteBuffer, pointSize: Int) {
+    private init(r: ByteBuffer, s: ByteBuffer, pointSize: Int) throws {
         precondition(MemoryLayout<ECDSASignatureHelper>.size >= pointSize, "Invalid width for ECDSA signature helper.")
 
         let rByteView = r.mpIntView
         let sByteView = s.mpIntView
+
+        // Signature integers arrive before peer authentication. Reject oversized values
+        // before calculating offsets into the fixed-size signature storage.
+        guard rByteView.count <= pointSize, sByteView.count <= pointSize else {
+            throw NIOSSHError.invalidSSHMessage(reason: "ECDSA signature mpint exceeds curve point size")
+        }
 
         let rByteStartingOffset = pointSize - rByteView.count
         let sByteStartingOffset = pointSize - sByteView.count
@@ -357,7 +363,7 @@ private struct ECDSASignatureHelper {
     }
 
     static func toECDSASignature<Signature: ECDSASignatureProtocol>(r: ByteBuffer, s: ByteBuffer) throws -> Signature {
-        let helper = ECDSASignatureHelper(r: r, s: s, pointSize: Signature.pointSize)
+        let helper = try ECDSASignatureHelper(r: r, s: s, pointSize: Signature.pointSize)
         return try withUnsafeBytes(of: helper.storage) { storagePtr in
             try Signature(rawRepresentation: UnsafeRawBufferPointer(rebasing: storagePtr.prefix(Signature.pointSize * 2)))
         }
